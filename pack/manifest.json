@@ -1,0 +1,48 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Random Maze",
+    "description": "A brand-new maze every time! Secret doors, hidden traps and a timer. Type /function maze",
+    "uuid": "aa9ba7ae-4b1f-4798-aa4d-a8f6558081f2",
+    "version": [
+      1,
+      0,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      21,
+      60
+    ]
+  },
+  "modules": [
+    {
+      "description": "Functions",
+      "type": "data",
+      "uuid": "ff6b7083-036e-4614-a004-b0dd4d56f322",
+      "version": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "description": "Maze generator and game logic",
+      "type": "script",
+      "language": "javascript",
+      "uuid": "663d4d7d-f582-41b9-a924-3ae0dd1cb749",
+      "entry": "scripts/main.js",
+      "version": [
+        1,
+        0,
+        0
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "1.17.0"
+    }
+  ]
+}

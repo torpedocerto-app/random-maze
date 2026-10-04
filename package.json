@@ -1,0 +1,11 @@
+{
+  "name": "random-maze",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minecraft Bedrock add-on: a brand-new maze every time, with secret doors, hidden traps and a timer.",
+  "type": "module",
+  "scripts": {
+    "test": "node tools/test_maze.mjs && node tools/simulate.mjs",
+    "build": "sh tools/build.sh"
+  }
+}
