@@ -12,4 +12,6 @@ writeFileSync(join(out, "main.js"), main);
 copyFileSync(join(root, "pack/scripts/maze.js"), join(out, "maze.js"));
 copyFileSync(join(root, "tools/sim/mock.js"), join(out, "mock.js"));
 copyFileSync(join(root, "tools/sim/run.mjs"), join(out, "run.mjs"));
+copyFileSync(join(root, "tools/sim/load_test.mjs"), join(out, "load_test.mjs"));
 await import(pathToFileURL(join(out, "run.mjs")).href);
+await import(pathToFileURL(join(out, "load_test.mjs")).href);

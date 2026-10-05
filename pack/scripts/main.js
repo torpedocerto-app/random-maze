@@ -22,6 +22,8 @@ const COMMANDS_PER_TICK = 40; // build in small batches so the game does not fre
 const GATE_BLOCK = "minecraft:mossy_cobblestone";
 const WALL_BLOCK = "minecraft:cobblestone";
 const STATE_KEY = "maze:state";
+const TICKING_AREA = "random_maze_build";
+const BUILD_TIMEOUT_TICKS = 30 * 20; // give up waiting for unloaded chunks after 30s
 
 let state = loadState();
 let building = false;
@@ -53,63 +55,113 @@ function buildMaze(player, size) {
   const maze = generateMaze(cells, NUM_GATES, TRAPS);
   const { W, H } = maze;
 
-  // The maze is CENTERED on the player, so the whole area is already loaded.
+  // The maze is CENTERED on the player. The player STAYS in the middle while it
+  // is built, so the whole area stays within the loaded distance.
   const loc = player.location;
   const ox = Math.floor(loc.x) - Math.floor(W / 2);
   const oy = Math.floor(loc.y);
   const oz = Math.floor(loc.z) - Math.floor(H / 2);
   const dim = player.dimension;
 
-  const cmds = [];
-  cmds.push(`fill ${ox} ${oy - 1} ${oz} ${ox + W - 1} ${oy - 1} ${oz + H - 1} minecraft:stone`);
-  cmds.push(`fill ${ox} ${oy} ${oz} ${ox + W - 1} ${oy + 3} ${oz + H - 1} minecraft:air`);
+  // Each job has its own area, so we can check that its chunks are loaded first.
+  const jobs = [];
+  // phase 0 = floor + clearing, phase 1 = walls, doors, plates, markers.
+  // Phase 1 only starts when phase 0 is completely done, otherwise a late
+  // clearing band would erase walls that were already built.
+  let phase = 0;
+  const add = (cmd, x0, z0, x1, z1) => jobs.push({ cmd, x0, z0, x1, z1, phase });
+  // Floor and clearing in bands of 8 rows: one giant /fill fails completely
+  // if any corner of it is not loaded.
+  for (let z = 0; z < H; z += 8) {
+    const z1 = Math.min(z + 7, H - 1);
+    add(`fill ${ox} ${oy - 1} ${oz + z} ${ox + W - 1} ${oy - 1} ${oz + z1} minecraft:stone`, ox, oz + z, ox + W - 1, oz + z1);
+    add(`fill ${ox} ${oy} ${oz + z} ${ox + W - 1} ${oy + 3} ${oz + z1} minecraft:air`, ox, oz + z, ox + W - 1, oz + z1);
+  }
+  phase = 1;
   for (const r of maze.wallRuns) {
-    cmds.push(`fill ${ox + r.x0} ${oy} ${oz + r.z} ${ox + r.x1} ${oy + 2} ${oz + r.z} ${WALL_BLOCK}`);
+    add(`fill ${ox + r.x0} ${oy} ${oz + r.z} ${ox + r.x1} ${oy + 2} ${oz + r.z} ${WALL_BLOCK}`, ox + r.x0, oz + r.z, ox + r.x1, oz + r.z);
   }
   for (const g of maze.gates) {
-    cmds.push(`fill ${ox + g.gx} ${oy} ${oz + g.gz} ${ox + g.gx} ${oy + 2} ${oz + g.gz} ${GATE_BLOCK}`);
-    cmds.push(`setblock ${ox + g.px} ${oy} ${oz + g.pz} minecraft:stone_pressure_plate`);
+    const gx = ox + g.gx, gz = oz + g.gz, px = ox + g.px, pz = oz + g.pz;
+    add(`fill ${gx} ${oy} ${gz} ${gx} ${oy + 2} ${gz} ${GATE_BLOCK}`, gx, gz, gx, gz);
+    add(`setblock ${px} ${oy} ${pz} minecraft:stone_pressure_plate`, px, pz, px, pz);
   }
-  cmds.push(`setblock ${ox + maze.entrance.x} ${oy - 1} ${oz + maze.entrance.z} minecraft:emerald_block`);
-  cmds.push(`setblock ${ox + maze.exit.x} ${oy - 1} ${oz + maze.exit.z} minecraft:redstone_block`);
+  const ex = ox + maze.entrance.x, ez = oz + maze.entrance.z;
+  const xx = ox + maze.exit.x, xz = oz + maze.exit.z;
+  add(`setblock ${ex} ${oy - 1} ${ez} minecraft:emerald_block`, ex, ez, ex, ez);
+  add(`setblock ${xx} ${oy - 1} ${xz} minecraft:redstone_block`, xx, xz, xx, xz);
 
-  // Move the player out of the area before building
-  const outside = { x: ox - 2 + 0.5, y: oy, z: oz + maze.entrance.z + 0.5 };
-  player.teleport(outside, { dimension: dim, rotation: { x: 0, y: -90 } });
-  player.sendMessage(`§e[Random Maze] Building a ${W}x${H} maze...`);
+  // Temporary ticking area: keeps the whole maze loaded while it is built.
+  try { dim.runCommand(`tickingarea remove ${TICKING_AREA}`); } catch { /* none yet */ }
+  try {
+    dim.runCommand(`tickingarea add ${ox} ${oy - 1} ${oz} ${ox + W - 1} ${oy + 3} ${oz + H - 1} ${TICKING_AREA} true`);
+  } catch {
+    // ticking areas full or not allowed: staying in the middle still covers most sizes
+  }
+
+  player.sendMessage(`§e[Random Maze] Building a ${W}x${H} maze... stay still!`);
 
   // Cancel open doors from the previous maze
   closeTimers.forEach((id) => system.clearRun(id));
   closeTimers.clear();
   startTick.clear();
 
-  let i = 0;
-  const job = system.runInterval(() => {
-    const end = Math.min(i + COMMANDS_PER_TICK, cmds.length);
-    for (; i < end; i++) {
-      try {
-        dim.runCommand(cmds[i]);
-      } catch {
-        // one failing command must not stop the whole build
-      }
+  const isLoaded = (x, z) => {
+    try {
+      return dim.getBlock({ x, y: oy, z }) !== undefined;
+    } catch {
+      return false; // LocationInUnloadedChunkError
     }
-    if (i >= cmds.length) {
-      system.clearRun(job);
-      state = {
-        dim: dim.id,
-        ox,
-        oy,
-        oz,
-        W,
-        H,
-        gates: maze.gates.map((g) => [ox + g.gx, oz + g.gz]),
-        traps: maze.traps.map((t) => [ox + t.x, oz + t.z, t.type]),
-        entrance: [ox + maze.entrance.x, oz + maze.entrance.z],
-        exit: [ox + maze.exit.x, oz + maze.exit.z],
-      };
-      world.setDynamicProperty(STATE_KEY, JSON.stringify(state));
-      building = false;
-      player.teleport(outside, { dimension: dim, rotation: { x: 0, y: -90 } });
+  };
+  const areaLoaded = (j) => isLoaded(j.x0, j.z0) && isLoaded(j.x1, j.z1) && isLoaded(j.x0, j.z1) && isLoaded(j.x1, j.z0);
+
+  let pending = jobs;
+  const startedAt = system.currentTick;
+  const job = system.runInterval(() => {
+    const waiting = [];
+    let done = 0;
+    const currentPhase = Math.min(...pending.map((j) => j.phase));
+    for (const j of pending) {
+      if (j.phase !== currentPhase || done >= COMMANDS_PER_TICK || !areaLoaded(j)) {
+        waiting.push(j);
+        continue;
+      }
+      try {
+        dim.runCommand(j.cmd);
+      } catch {
+        // e.g. "no blocks changed" — the area is loaded, so this is not a real failure
+      }
+      done++;
+    }
+    pending = waiting;
+
+    const timedOut = system.currentTick - startedAt > BUILD_TIMEOUT_TICKS;
+    if (pending.length > 0 && !timedOut) return;
+
+    system.clearRun(job);
+    try { dim.runCommand(`tickingarea remove ${TICKING_AREA}`); } catch { /* already gone */ }
+    state = {
+      dim: dim.id,
+      ox,
+      oy,
+      oz,
+      W,
+      H,
+      gates: maze.gates.map((g) => [ox + g.gx, oz + g.gz]),
+      traps: maze.traps.map((t) => [ox + t.x, oz + t.z, t.type]),
+      entrance: [ex, ez],
+      exit: [xx, xz],
+    };
+    world.setDynamicProperty(STATE_KEY, JSON.stringify(state));
+    building = false;
+    player.teleport({ x: ex - 2 + 0.5, y: oy, z: ez + 0.5 }, { dimension: dim, rotation: { x: 0, y: -90 } });
+
+    if (pending.length > 0) {
+      world.sendMessage(
+        `§c[Random Maze] ${pending.length} parts of the maze could not be built because that area was not loaded. ` +
+          `Try a smaller maze (/scriptevent maze:new 41) or increase the simulation distance in the world settings.`
+      );
+    } else {
       world.sendMessage(
         `§a[Random Maze] Ready! ${maze.gates.length} secret doors and ${maze.traps.length} hidden traps. Good luck!`
       );
